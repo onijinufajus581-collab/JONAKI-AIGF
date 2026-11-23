@@ -1,0 +1,179 @@
+name: JONAKI AI - Android APK Build
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jonaki-ai-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build JONAKI AI APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      # 1. Download repository
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # 2. Java setup
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # 3. Android SDK setup
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      # 4. Install Android SDK packages
+      - name: Install Android SDK Packages
+        run: |
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      # 5. Setup Gradle
+      - name: Setup Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      # 6. Find actual Android project directory
+      - name: Detect Project Directory
+        shell: bash
+        run: |
+          set -e
+
+          echo "Searching for JONAKI AI project..."
+
+          PROJECT_DIR=""
+
+          if [ -f "settings.gradle" ] && [ -d "app" ]; then
+            PROJECT_DIR="."
+          else
+            while IFS= read -r file; do
+              candidate="${file%/settings.gradle}"
+
+              if [ -f "$candidate/app/build.gradle" ] && \
+                 [ -f "$candidate/app/src/main/AndroidManifest.xml" ]; then
+                PROJECT_DIR="$candidate"
+                break
+              fi
+            done < <(find . -maxdepth 5 -type f -name "settings.gradle" -print)
+          fi
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: Android project directory not found."
+            echo "Repository contents:"
+            find . -maxdepth 6 -type f -print
+            exit 1
+          fi
+
+          echo "Project found: $PROJECT_DIR"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      # 7. Validate all required files
+      - name: Validate Project Files
+        shell: bash
+        run: |
+          set -e
+
+          cd "$PROJECT_DIR"
+
+          REQUIRED_FILES=(
+            "settings.gradle"
+            "build.gradle"
+            "gradle.properties"
+            "app/build.gradle"
+            "app/src/main/AndroidManifest.xml"
+            "app/src/main/java/com/jonaki/ai/MainActivity.java"
+            "app/src/main/java/com/jonaki/ai/VoiceAssistantService.java"
+            "app/src/main/res/drawable/ic_jonaki.xml"
+          )
+
+          MISSING=0
+
+          echo "Checking JONAKI AI files..."
+
+          for FILE in "${REQUIRED_FILES[@]}"; do
+            if [ -f "$FILE" ]; then
+              echo "FOUND: $FILE"
+            else
+              echo "MISSING: $FILE"
+              MISSING=1
+            fi
+          done
+
+          if [ "$MISSING" -ne 0 ]; then
+            echo "ERROR: Some required files are missing."
+            echo "Upload the complete project ZIP contents."
+            exit 1
+          fi
+
+          echo "All project files verified."
+
+      # 8. Verify Java and Gradle
+      - name: Verify Build Environment
+        run: |
+          java -version
+          gradle --version
+          sdkmanager --list_installed
+
+      # 9. Build APK
+      - name: Build JONAKI AI Debug APK
+        shell: bash
+        run: |
+          set -o pipefail
+          cd "$PROJECT_DIR"
+
+          gradle \
+            --no-daemon \
+            --stacktrace \
+            --warning-mode all \
+            clean assembleDebug
+
+      # 10. Verify APK
+      - name: Verify APK File
+        shell: bash
+        run: |
+          set -e
+          cd "$PROJECT_DIR"
+
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -f "$APK" ]; then
+            echo "ERROR: APK file was not generated."
+            exit 1
+          fi
+
+          echo "APK successfully generated:"
+          ls -lh "$APK"
+
+      # 11. Upload APK
+      - name: Upload JONAKI AI APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: JONAKI-AI-APK
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
+
+      # 12. Show failure information
+      - name: Build Failure Information
+        if: failure()
+        run: |
+          echo "JONAKI AI build failed."
+          echo "Open the failed step above to see the exact error."
+          
